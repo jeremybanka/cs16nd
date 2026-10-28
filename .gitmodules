@@ -1,0 +1,3 @@
+[submodule "cops-and-robbers"]
+	path = cops-and-robbers
+	url = https://github.com/jeremybanka/cops-and-robbers.git

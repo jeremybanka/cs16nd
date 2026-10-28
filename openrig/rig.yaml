@@ -1,0 +1,31 @@
+version: "0.2"
+name: cs16nd
+summary: A Codex implementation lead and independent reviewer for the standalone N64 port.
+culture_file: CULTURE.md
+startup:
+  files:
+    - path: context.md
+      delivery_hint: send_text
+      required: true
+pods:
+  - id: dev
+    label: N64 Port
+    members:
+      - id: build
+        agent_ref: local:agents/build
+        runtime: codex
+        profile: default
+        cwd: ".."
+      - id: review
+        agent_ref: local:agents/review
+        runtime: codex
+        profile: default
+        cwd: ".."
+    edges:
+      - kind: delegates_to
+        from: build
+        to: review
+      - kind: can_observe
+        from: review
+        to: build
+edges: []

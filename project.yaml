@@ -1,0 +1,12 @@
+schema: openrig.project/v0alpha1
+kind: project
+id: cs16nd
+install:
+  intent: README.md
+  context:
+    - port/n64/PERFORMANCE.md
+    - port/n64/FEASIBILITY.md
+    - openrig/CULTURE.md
+    - openrig/context.md
+    - openrig/README.md
+  skills: []

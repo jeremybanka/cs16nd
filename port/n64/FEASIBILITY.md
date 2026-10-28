@@ -2,10 +2,15 @@
 
 A custom N64 implementation is practical. A direct recompile of this PC game
 DLL is not a useful starting point: `dlls/h_export.cpp` depends on engine callbacks
-from `engine/eiface.h`, and the repository does not supply an N64 renderer,
-platform layer, asset system, or local multiplayer frontend. Selectively porting
-movement, combat math, weapon timing, and round rules can follow a working N64
-runtime.
+from `engine/eiface.h`. Those legacy PC trees are reference history; the active
+`port/n64/` runtime supplies its own renderer, platform layer, asset conversion
+and local multiplayer. Selective reuse of PC behavior is separate from compiling
+the game DLL.
+
+Current runtime facts and measurements live in [the README](../../README.md) and
+[PERFORMANCE.md](PERFORMANCE.md). The initial walkthrough below is historical;
+later sections describe the two-player prototype and possible future work, not
+an assigned feature backlog.
 
 The relevant precedent is the existing `halo-1/port/n64` project. Its README and
 runtime describe a standalone libdragon/Tiny3D demake, shared resident assets,
@@ -35,13 +40,13 @@ avoids repeated scans and redundant texture uploads.
 | Linked text + data + BSS | Approximately 1.10 MiB |
 | Three color buffers + one depth buffer at 320×240×16-bit | 600 KiB |
 
-Those linked sizes include the static map data but exclude dynamic SDK/renderer
-allocations. They are not a measured free-heap figure. The ROM boots and draws
-on ares with 4 MiB RAM. Expansion Pak support is a sensible target for the full
-game, especially with character meshes, animation, weapons, audio, and bots.
+Those historical linked sizes include the static map data but exclude dynamic
+SDK/renderer allocations. They are not a measured free-heap figure. That single-player ROM
+booted and drew on ares with 4 MiB RAM. The current two-player ROM requires
+the 8 MiB Expansion Pak.
 
-The optimized normal build's counter shows approximately 60 frames per emulated
-second at the checked T-spawn view. This is a rendered-loop counter, not a VI
+The initial walkthrough's optimized normal build counter showed approximately
+60 frames per emulated second at the checked T-spawn view. This is a rendered-loop counter, not a VI
 presentation audit or a map-wide benchmark. Instrumented graphics validation is
 slower. Neither measurement establishes real-console performance or input latency.
 
@@ -50,30 +55,44 @@ slower. Neither measurement establishes real-console performance or input latenc
 Two-player horizontal splitscreen now runs on the original Dust II map. Both
 players have the original Terrorist model, a hand-attached Glock, first-person
 hands/weapon, skeletal animations, crouching, hitscan damage, wall occlusion,
-reloads, death and respawn. Weapon audio assets/mixing are present, but playback
-startup needs the fix identified in `PERFORMANCE.md`. Assets and simulation are shared;
+reloads, death and respawn. Weapon audio playback is active: startup primes the
+audio DMA, and profiling includes mixer callbacks. Assets and simulation are shared;
 controllers, cameras, viewport matrices, HUD and visibility selection are separate.
 
 The original player model has 740 triangles and 53 bones; the first-person Glock
 and hands have 882 triangles and 41 bones; the held Glock has 78 triangles.
-All 111 player clips and 13 viewmodel clips remain in the ROM's compressed source
-animation streams. Runtime caching avoids repeated RLE decoding and Euler
-conversion. Indexed 64-vertex batches and cached RSP command blocks reduce draw
-submission and vertex transformation costs. Deformed vertices and matrices have
-three fenced buffers so the CPU cannot overwrite data still consumed by the RSP.
+All 111 player sequences, 13 viewmodel sequences and the held-weapon sequence
+are retained. Player aim/gait blending and transitions remain skeletal, with
+runtime caching of source animation data. All first-person Glock clips are now
+baked offline into a 2,299,280-byte resident bank; an independent source-pose
+sweep measured at most 1/16 game unit coordinate error. The original nearby
+740-triangle player mesh is retained; conservative distant LODs use 690 and
+580 triangles. Indexed batches, conservative actor culling, cached PVS candidates
+and immutable face command blocks reduce work. Deformed vertices and matrices
+have three fenced buffers, and face-command cache reclamation respects RSP
+fences. The private 16 KiB queue override leaves the shared SDK unchanged.
 
-This version targets an 8 MiB Expansion Pak. Linked code, constant data and BSS
-are approximately 3.33 MiB, before framebuffers, mesh buffers, command blocks,
-audio buffers and SDK allocations. The build manifest and runtime heap logs give
-the exact measurements for each build.
+This version requires an 8 MiB Expansion Pak. The optimized captures observed
+869,896 bytes of free heap at T spawn and 670,952 bytes after the tested additional
+scenes. These are observations for those builds and routes, not a general memory
+budget. Remeasure resident allocations and free heap for later work; build
+manifests and runtime logs identify the exact candidate.
 
-The uninstrumented two-player scripted T-spawn route currently measures roughly
-17–19 rendered frames per emulated second. It is a working prototype, below the
-30 FPS target. The RDP validator is slower and is not a performance benchmark.
+The optimized profiling build measures 34.62 FPS / 28.87 ms in the controlled
+two-player T-spawn scene, compared with the earlier equivalent 19.12 FPS baseline.
+Moving combat windows measure 32.09–36.80 FPS, with a 38.38 ms worst frame.
+These emulated CPU Count and VI framebuffer observations are not a map-wide
+30 FPS floor or real-hardware evidence; ares refresh rate is not gameplay FPS.
+Simulation remains 60 Hz, with three presentation buffers. The RDP validator
+and serialized diagnostics are separate from production performance measurements.
 The automated acceptance fixture demonstrates movement, jump/crouch, shooting,
 wall occlusion (host test), reload, kill/death and respawn. Source fidelity checks
 compare 103,239 bone poses, and host sanitizer tests exercise every animation
-frame. Physical-controller and real-console validation remain outstanding.
+frame. The stationary benchmark retains two unresolved SDK
+`__rspq_syncpoints_done` coherency diagnostics. Moving performance and separate
+combat/LOD/culling validation captures had none; that does not resolve the SDK
+finding. Representative map routes, physical controllers and real N64 remain
+outstanding evidence gaps. See PERFORMANCE.md for commands and retained evidence.
 
 ## More views and performance
 
@@ -81,12 +100,12 @@ Four views do not require four copies of the map, but CPU traversal, draw
 submission, clipping, character animation, and visible geometry can multiply.
 The smaller pixel area per view does not remove those costs.
 
-Use 320×240 overall as the baseline. Aim for a measured 30 FPS two-player build
-before committing to four-player content budgets. Add an RDP completion/VI
-observer and benchmark worst-case opposing views at mid, long A, B, and tunnels.
-The current per-face submission is deliberately simple; compact cached geometry
-batches, per-leaf candidate lists, and more efficient lighting will likely matter
-once more views and animated actors are present.
+Use 320×240 overall as the baseline. The controlled two-player scenes now average
+above 30 FPS, but representative opposing views at mid, long A, B and tunnels
+still need measurement before committing to four-player content budgets. RDP
+completion/VI observers, cached per-leaf candidates and fenced face command
+blocks are implemented. Further changes should follow measured bottlenecks,
+preserving animation coverage, conservative bounds and the 60 Hz simulation.
 
 ## Bots
 
@@ -109,7 +128,7 @@ separate porting effort. Initial bot count and four-player performance remain op
    Next fidelity checks include every route, stairs, ceiling/edge cases, and
    physical gamepad input.
 2. **Combat slice (implemented):** original Terrorist and Glock meshes, hitscan, damage,
-   animation, sound assets/mixing, death, respawn, and a repeatable memory/performance baseline.
+   animation, active weapon audio, death, respawn, and repeatable memory/performance captures.
 3. **Two-player combat (implemented):** independent views/input and shared simulation.
    Next: stable 30 FPS across representative routes, physical gamepads, team rules
    and a real round reset. Current players are both Terrorists with friendly fire.
@@ -126,7 +145,7 @@ multiplayer rendering, and performant AI are substantial remaining work.
 ## Current omissions and boundaries
 
 The current runtime has player models, skeletal animations, a basic Glock, two
-views and a weapon audio pipeline whose playback startup is currently inactive.
+views and active weapon audio playback.
 Ladders, water movement, dynamic doors, breakable objects,
 dynamic lights, skybox imagery, networking, bots and Counter-Strike match logic
 remain unimplemented. Player damage uses simple boxes. Vertex lighting, reduced

@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 .DS_Store
+
+# OpenRig generates these locally; portable authored configuration is in openrig/.
+/AGENTS.md
+/.openrig/
+/.codex/plugins/openrig-core/

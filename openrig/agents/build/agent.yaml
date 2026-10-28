@@ -1,0 +1,29 @@
+name: cs16nd-build
+version: "1.0"
+description: CS16ND implementation lead
+defaults:
+  runtime: codex
+profiles:
+  default:
+    uses:
+      skills: []
+      guidance: []
+      subagents: []
+      plugins: [openrig-core]
+      runtime_resources: []
+resources:
+  plugins:
+    - id: openrig-core
+      source:
+        kind: local
+        path: openrig-home:plugins/openrig-core
+  guidance:
+    - id: role
+      path: guidance/role.md
+startup:
+  files:
+    - path: guidance/role.md
+      orientation: role
+      delivery_hint: send_text
+      required: true
+  actions: []

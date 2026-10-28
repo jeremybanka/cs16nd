@@ -164,6 +164,13 @@ A strict 30 FPS floor across the whole map and physical N64 testing remain work.
 
 See [feasibility and next milestones](port/n64/FEASIBILITY.md).
 
+## OpenRig team
+
+The reusable [OpenRig setup](openrig/README.md) defines a Codex implementation
+lead and independent reviewer, with project context in [project.yaml](project.yaml).
+It documents validation, starting a new team, continuing existing conversations,
+and assigning the next task. Starting the team does not authorize feature work.
+
 ## Source repositories
 
 The public port is maintained at [jeremybanka/cs16nd](https://github.com/jeremybanka/cs16nd).

@@ -10,6 +10,7 @@ static void check_model(const Model *m){
     }
     BonePose pose[MODEL_MAX_BONES];BoneMatrix bones[MODEL_MAX_BONES];
     VertexPair *vertices=malloc(m->corners/2*sizeof(VertexPair));assert(vertices);
+    model_vertices_init(m,vertices);
     int samples=0;
     for(int s=0;s<m->sequences;s++)for(int frame=0;frame<m->sequence[s].frames;frame++){
         model_pose(m,s,frame/m->sequence[s].fps,.5f,.5f,pose);
@@ -19,6 +20,21 @@ static void check_model(const Model *m){
             assert(fabsf(len-1)<.001f);
             for(int j=0;j<3;j++)for(int k=0;k<4;k++)assert(isfinite(bones[b].m[j][k]));
         }
+        /* Independent original float transform + lroundf packing oracle. */
+        for(int i=0;i<m->corners;i++){
+            const ModelCorner *c=&m->corner[i];const ModelVertex *v=&m->vertex[c->vertex];
+            const BoneMatrix *b=&bones[v->bone];float in[]={v->pos.x,v->pos.y,v->pos.z},p[3];
+            for(int j=0;j<3;j++){p[j]=b->m[j][3];for(int k=0;k<3;k++)p[j]+=b->m[j][k]*in[k];}
+            const VertexPair *pair=&vertices[i/2];const int16_t *pos=i&1?pair->posB:pair->posA,*uv=i&1?pair->stB:pair->stA;
+            assert(pos[0]==lroundf(p[0]*32) && pos[1]==lroundf(p[2]*32) && pos[2]==lroundf(-p[1]*32));
+            assert(uv[0]==c->s && uv[1]==c->t);
+            assert((i&1?pair->rgbaB:pair->rgbaA)==0xffffffff);
+        }
+        if(m==&terror_model || m==&terror_lod1_model || m==&terror_lod2_model)
+            for(int i=0;i<m->corners;i++){
+                const int16_t *v=i&1?vertices[i/2].posB:vertices[i/2].posA;
+                assert(sqrtf((float)v[0]*v[0]+(float)v[1]*v[1]+(float)v[2]*v[2])/32<=actor_bound_radius);
+            }
         samples++;
     }
     /* Every source aim blend, including adjacent-cell interpolation. */
@@ -29,7 +45,12 @@ static void check_model(const Model *m){
     free(vertices);
 }
 int main(void){
-    check_model(&terror_model);check_model(&glock_view_model);check_model(&glock_world_model);
+    for(int i=-32767;i<32767;i++){
+        float tie=i+.5f;
+        float values[]={tie,nextafterf(tie,-INFINITY),nextafterf(tie,INFINITY),(float)i};
+        for(unsigned j=0;j<sizeof(values)/sizeof(*values);j++)assert(model_round_position(values[j])==lroundf(values[j]));
+    }
+    check_model(&terror_model);check_model(&terror_lod1_model);check_model(&terror_lod2_model);check_model(&glock_view_model);check_model(&glock_world_model);
     Game g;game_init(&g);Controls c[2];int saw_crouch=0,saw_jump=0,saw_death=0,saw_reload=0;
     BonePose pose[MODEL_MAX_BONES];
     for(unsigned tick=0;tick<1200;tick++){

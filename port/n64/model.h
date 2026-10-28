@@ -14,10 +14,27 @@ typedef struct { int bones,sequences,vertices,corners,batches,textures; const Mo
 typedef struct { float p[3],q[4]; } BonePose;
 typedef struct { float m[3][4]; } BoneMatrix;
 extern const Model terror_model,glock_view_model,glock_world_model;
+extern const Model terror_lod1_model,terror_lod2_model;
+extern const float actor_bound_radius;
+typedef union { int16_t xyz[4]; uint64_t word; } ModelPosition;
+typedef uint64_t ModelPositionWord __attribute__((__may_alias__));
+/* Position + zero normal are a single aligned VR4300 load/store. */
+static inline void model_scatter(const Model *m,const ModelPosition *positions,VertexPair *out){
+    ModelPositionWord *words=(ModelPositionWord*)out;
+    const ModelCorner *corner=m->corner,*end=corner+m->corners;
+    for(;corner<end;corner+=2,words+=4){
+        words[0]=positions[corner[0].vertex].word;
+        words[1]=positions[corner[1].vertex].word;
+    }
+}
 int model_sequence(const Model *m,const char *name);
 float model_duration(const Model *m,int seq);
 void model_pose(const Model *m,int seq,float seconds,float yaw_blend,float pitch_blend,BonePose *pose);
 void model_mix(BonePose *a,const BonePose *b,float t);
 void model_matrices(const Model *m,const BonePose *pose,BoneMatrix *matrices,const BoneMatrix *merge);
+/* Initialize immutable UV/color/normal fields once for each fenced buffer. */
+void model_vertices_init(const Model *m,VertexPair *output);
+/* Finite coordinates in the signed 16-bit range; rounds ties away from zero. */
+int16_t model_round_position(float value);
 void model_skin(const Model *m,const BoneMatrix *bones,VertexPair *output);
 #endif

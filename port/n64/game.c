@@ -97,6 +97,7 @@ void game_tick(Game *g,const Controls controls[2],float dt){
     g->ticks++;
 }
 void game_pose(Fighter *f,BonePose *pose){
+    if(!f->pose_valid)f->transition=1; /* Re-enter visibility at the current pose. */
     float yaw=.5f-angle(f->player.yaw-f->body_yaw)/PI;
     float pitch=.5f+f->player.pitch/PI;
     float time=f->health<=0?f->death_age:f->reloading>0?(2.2f-f->reloading)*(2.0f/2.2f):f->shot_age<.4f?f->shot_age:f->upper_age;

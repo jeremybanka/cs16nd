@@ -6,7 +6,9 @@ p=argparse.ArgumentParser(description=__doc__)
 p.add_argument('--ares',default=str(ROOT/'build/n64/CS64-ares.app/Contents/MacOS/ares') if (ROOT/'build/n64/CS64-ares.app').exists() else '/Applications/ares.app/Contents/MacOS/ares')
 p.add_argument('--rom',type=pathlib.Path,default=ROOT/'build/n64/cs64-dust2-2p.z64')
 p.add_argument('--reset-profile',action='store_true',help='Regenerate only the project keyboard profile')
-a=p.parse_args();config=ROOT/'build/n64/ares-two-player.bml'
+p.add_argument('--settings-file',type=pathlib.Path,default=ROOT/'build/n64/ares-two-player.bml')
+p.add_argument('--background',action='store_true',help='Keep emulation running but block input when unfocused (isolated capture profiles)')
+a=p.parse_args();config=a.settings_file
 if not a.rom.is_file():raise SystemExit(f'Build the ROM first: {a.rom}')
 if not config.exists() or a.reset_profile:
     default=pathlib.Path.home()/'Library/Application Support/ares/settings.bml'
@@ -25,6 +27,12 @@ if not config.exists() or a.reset_profile:
     match=re.search(r'(?m)^Nintendo64\n(?:[ \t].*\n|\n)*',text)
     text=text[:match.start()]+section+text[match.end():] if match else text+'\n'+section
     config.parent.mkdir(parents=True,exist_ok=True);config.write_text(text)
+if a.background:
+    text=config.read_text()
+    if re.search(r'(?m)^  Defocus: .*$',text):text=re.sub(r'(?m)^  Defocus: .*$', '  Defocus: Block',text)
+    elif re.search(r'(?m)^Input$',text):text=re.sub(r'(?m)^Input$', 'Input\n  Defocus: Block',text,count=1)
+    else:text+='\nInput\n  Defocus: Block\n'
+    config.write_text(text)
 print('P1: WASD / arrows / Space jump / Q fire / E reload / C crouch / Return respawn',flush=True)
 print('P2: IJKL / U,O turn / 8,9 look / N jump / M fire / P reload / V crouch / Delete respawn',flush=True)
 subprocess.run([a.ares,'--settings-file',str(config),'--system','Nintendo 64','--no-file-prompt',str(a.rom.resolve())],check=True)

@@ -1,10 +1,6 @@
 #include "world.h"
 #include <math.h>
 #include <string.h>
-Vec3 add(Vec3 a,Vec3 b){return (Vec3){a.x+b.x,a.y+b.y,a.z+b.z};}
-Vec3 sub(Vec3 a,Vec3 b){return (Vec3){a.x-b.x,a.y-b.y,a.z-b.z};}
-Vec3 mul(Vec3 a,float b){return (Vec3){a.x*b,a.y*b,a.z*b};}
-float dot(Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 static float clamp(float x,float a,float b){return fmaxf(a,fminf(b,x));}
 static int contents(const Node *tree,int root,Vec3 p){
     while(root>=0){const Node *n=&tree[root];const Plane *pl=&planes[n->plane];root=n->child[dot(p,pl->n)<pl->d];}

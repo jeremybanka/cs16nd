@@ -14,6 +14,28 @@ static Controls read_controls(int id,int *connected){
         .turn=axis(in.stick_x),.look=in.btn.c_up-in.btn.c_down,
         .jump=press.a,.crouch=in.btn.l,.fire=press.z,.reload=press.b,.respawn=press.start};
 }
+#if defined(SMOKE_TEST) && defined(VALIDATE)
+static void validate_model_views(void){
+    static Game qa;Controls neutral[2]={0};int connected[2]={1,1};
+    for(int mode=0;mode<3;mode++){
+        game_init(&qa);int a=-1,b=-1;
+        for(int i=0;i<spawn_count && a<0;i++)for(int j=i+1;j<spawn_count;j++){
+            Vec3 d=sub(spawns[i].pos,spawns[j].pos);float distance=sqrtf(dot(d,d));
+            if((mode==0 && distance>570 && distance<1000) || (mode>0 && distance>1200)){a=i;b=j;break;}
+        }
+        assertf(a>=0,"Missing LOD validation spawn pair");
+        player_spawn(&qa.fighters[0].player,a);player_spawn(&qa.fighters[1].player,b);
+        for(int i=0;i<2;i++){
+            Player *p=&qa.fighters[i].player;Vec3 d=sub(qa.fighters[1-i].player.pos,player_eye(p));
+            p->yaw=atan2f(d.y,d.x)+(mode==2?3.14159265358979323846f:0);
+            p->pitch=atan2f(d.z,hypotf(d.x,d.y));qa.fighters[i].body_yaw=p->yaw;
+        }
+        for(int tick=0;tick<120;tick++)game_tick(&qa,neutral,1.0f/60);
+        for(int frame=0;frame<12;frame++){game_tick(&qa,neutral,1.0f/60);render_frame(&qa,0,connected);}
+        rspq_wait();debugf("LOD/CULL VALIDATION %d PASS\n",mode);
+    }
+}
+#endif
 int main(void){
     debug_init_isviewer();debug_init_usblog();
     if(get_memory_size()<8*1024*1024){
@@ -58,6 +80,9 @@ int main(void){
             }
             if(game.ticks==1200){
                 assertf(game.fighters[0].hits==4 && game.fighters[0].kills==1 && game.fighters[0].reserve==116 && game.fighters[1].health==100,"2P weapon acceptance failed");
+#ifdef VALIDATE
+                validate_model_views();
+#endif
                 debugf("2P SMOKE PASS: independent movement, jump/crouch, 4 hits, kill/death, reload, respawn\n");
             }
 #endif

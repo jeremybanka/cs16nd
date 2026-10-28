@@ -21,10 +21,10 @@ extern const Spawn spawns[];
 extern const int face_count,world_leaf_count,world_faces,leaf_count,texture_count,hull_count,spawn_count,vertex_pairs;
 typedef struct { float fraction; Vec3 end,normal; int startsolid; } Trace;
 typedef struct { Vec3 pos,vel; float yaw,pitch; int grounded,crouched; } Player;
-Vec3 add(Vec3 a,Vec3 b);
-Vec3 sub(Vec3 a,Vec3 b);
-Vec3 mul(Vec3 a,float b);
-float dot(Vec3 a,Vec3 b);
+static inline Vec3 add(Vec3 a,Vec3 b){return (Vec3){a.x+b.x,a.y+b.y,a.z+b.z};}
+static inline Vec3 sub(Vec3 a,Vec3 b){return (Vec3){a.x-b.x,a.y-b.y,a.z-b.z};}
+static inline Vec3 mul(Vec3 a,float b){return (Vec3){a.x*b,a.y*b,a.z*b};}
+static inline float dot(Vec3 a,Vec3 b){return a.x*b.x+a.y*b.y+a.z*b.z;}
 int point_contents(int root,Vec3 p);
 Trace trace_world(Vec3 start,Vec3 end);
 Trace trace_player(Vec3 start,Vec3 end,int crouched);

@@ -2,6 +2,7 @@
 #ifdef PROFILE
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 enum { WARMUP=36, SAMPLES=120, TOTAL=WARMUP+SAMPLES };
 typedef struct {
     uint32_t start,end,graphics,submitted,ready,stage[PF_COUNT],counter[PC_COUNT];
@@ -21,7 +22,7 @@ static const char *stage_names[PF_COUNT]={
 };
 static const char *counter_names[PC_COUNT]={
     "simulation_steps","world_faces","world_triangles","world_vertices","world_texture_uploads",
-    "model_triangles","model_vertices","model_texture_uploads","skinned_vertices","packed_vertices","pose_cache_hits","pose_cache_misses"
+    "model_triangles","model_vertices","model_texture_uploads","skinned_vertices","packed_vertices","pose_cache_hits","pose_cache_misses","world_candidates","face_cache_hits","face_cache_misses","actors_culled","actors_lod1","actors_lod2"
 };
 static const PerfOptions scenarios[]={
     {"two_full",2,0,1,1,0,1,1},
@@ -33,7 +34,10 @@ static const PerfOptions scenarios[]={
     {"two_no_actors",2,0,0,1,0,1,1},
     {"two_silent",2,0,1,1,0,1,0},
     {"two_no_hud",2,0,1,1,0,0,1},
-    {"two_full_repeat",2,0,1,1,0,1,1}
+    {"two_full_repeat",2,0,1,1,0,1,1},
+    {"two_mid_lod",2,0,1,1,0,1,1},
+    {"two_far_lod",2,0,1,1,0,1,1},
+    {"two_away",2,0,1,1,0,1,1}
 };
 static void vi_tick(void){
     /* Read-only VI_ORIGIN, same register as libdragon src/vi.h. NTSC noninterlaced.
@@ -100,7 +104,8 @@ static void report(void){
     for(int j=0;j<PC_COUNT;j++)debugf("%s\"%s\":%.4f",j?",":"",counter_names[j],(double)counts[j]/SAMPLES);
     debugf("},\"detail_ms\":{");
     for(int j=0;j<PD_COUNT;j++)debugf("%s\"%s\":%.4f",j?",":"",detail_names[j],milliseconds(details[j])/SAMPLES);
-    debugf("},\"audio_callbacks\":%lu}\n",(unsigned long)calls);
+    heap_stats_t heap;sys_get_heap_stats(&heap);
+    debugf("},\"audio_callbacks\":%lu,\"heap_free_bytes\":%d}\n",(unsigned long)calls,heap.total-heap.used);
 }
 int perf_begin_frame(Game *game){
     int reset=0;
@@ -115,6 +120,21 @@ int perf_begin_frame(Game *game){
             debugf("PERF_DONE\n");scenario=0;
         }
         game_init(game);Controls neutral[2]={0};
+        if(scenario>=10){
+            int a=-1,b=-1;
+            for(int i=0;i<spawn_count && a<0;i++)for(int j=i+1;j<spawn_count;j++){
+                Vec3 d=sub(spawns[i].pos,spawns[j].pos);float distance=sqrtf(dot(d,d));
+                if((scenario==10 && distance>570 && distance<1000) || (scenario>10 && distance>1200)){a=i;b=j;break;}
+            }
+            assertf(a>=0,"Missing model LOD benchmark spawn pair");
+            player_spawn(&game->fighters[0].player,a);player_spawn(&game->fighters[1].player,b);
+            for(int i=0;i<2;i++){
+                Player *p=&game->fighters[i].player;Vec3 d=sub(game->fighters[1-i].player.pos,player_eye(p));
+                p->yaw=atan2f(d.y,d.x)+(scenario==12?3.14159265358979323846f:0);
+                p->pitch=atan2f(d.z,hypotf(d.x,d.y));
+                game->fighters[i].body_yaw=p->yaw;
+            }
+        }
         for(int i=0;i<120;i++)game_tick(game,neutral,1.0f/60);
         audio_pause(!perf_options().audio);
 #else

@@ -6,33 +6,54 @@
 #include <string.h>
 #include "render.h"
 #include "perf.h"
+#include "baked.h"
+#include "visibility.h"
 _Static_assert(sizeof(VertexPair)==sizeof(T3DVertPacked),"Vertex layout mismatch");
 enum { MAX_FACES=8192, MAX_PVS_BYTES=2048, BUFFER_COUNT=3 };
-static uint8_t visible[MAX_FACES],pvs[MAX_PVS_BYTES];
+static struct { int leaf,count; uint16_t faces[MAX_FACES]; } candidates[2];
 static uint16_t draw_order[MAX_FACES];
 static int order_count,frame_slot;
 static surface_t depth_buffer,*world_tex;
 static T3DMat4FP *identity;
 typedef struct { const Model *model; surface_t *texture; VertexPair *vertices[BUFFER_COUNT][2]; rspq_block_t *draw[BUFFER_COUNT][2]; int triangles,load_vertices; } Mesh;
-static Mesh actors,held,viewgun;
+static Mesh actors[3],held,viewgun;
 typedef struct {
     T3DViewport world[2],weapon[2];
     T3DMat4FP *actor_matrix[2],*weapon_matrix;
     rspq_syncpoint_t fence;
 } Frame;
 static Frame frames[BUFFER_COUNT];
-static void mark_visible(Vec3 eye){
-    memset(visible,0,sizeof(visible));
-    int leaf=world_leaf(eye),offset=leaves[leaf].vis,bytes=(world_leaf_count+7)/8;
-    memset(pvs,255,sizeof(pvs));
-    if(offset>=0){
-        int out=0;
-        while(out<bytes){int b=visibility[offset++];if(b)pvs[out++]=b;else{int n=visibility[offset++];while(n-- && out<bytes)pvs[out++]=0;}}
-    }
-    for(int i=1;i<=world_leaf_count;i++)if((pvs[(i-1)/8]>>((i-1)%8))&1)
-        for(int j=0;j<leaves[i].count;j++)visible[marks[leaves[i].first+j]]=1;
-    for(int i=world_faces;i<face_count;i++)visible[i]=1;
+enum { FACE_CACHE_SIZE=1024 };
+typedef struct { rspq_block_t *block; int face; unsigned used,slots; } FaceCommands;
+static FaceCommands face_cache[FACE_CACHE_SIZE];
+static int16_t face_command_index[MAX_FACES];
+static unsigned command_stamp,active_slot;
+static uint16_t available_faces[FACE_CACHE_SIZE];
+static int available_count;
+static void submit_face(const Face *f){
+    t3d_vert_load((const T3DVertPacked*)&vertices[f->first],0,(f->count+1)&~1);
+    for(int v=1;v<f->count-1;v++)t3d_tri_draw(0,v,v+1);
+    t3d_tri_sync();
 }
+static void run_face(int face){
+    int index=face_command_index[face];
+    if(index<0){
+        PERF_COUNTER(PC_FACE_MISS,1);
+        while(available_count){
+            int candidate=available_faces[--available_count];
+            if(!face_cache[candidate].slots){index=candidate;break;}
+        }
+        if(index<0){submit_face(&faces[face]);return;}
+        FaceCommands *entry=&face_cache[index];
+        /* An entry can be freed only after every frame that borrowed it fenced. */
+        if(entry->block){face_command_index[entry->face]=-1;rspq_block_free(entry->block);}
+        rspq_block_begin();submit_face(&faces[face]);entry->block=rspq_block_end();
+        entry->face=face;face_command_index[face]=index;
+    }else PERF_COUNTER(PC_FACE_HIT,1);
+    FaceCommands *entry=&face_cache[index];entry->used=++command_stamp;entry->slots|=1u<<active_slot;
+    rspq_block_run(entry->block);
+}
+
 static void mesh_init(Mesh *mesh,const Model *model){
     mesh->model=model;mesh->texture=malloc(sizeof(surface_t)*model->textures);assert(mesh->texture);
     data_cache_hit_writeback((void*)model->texture,model->textures*4096);
@@ -40,10 +61,13 @@ static void mesh_init(Mesh *mesh,const Model *model){
     for(int i=0;i<model->batches;i++){mesh->triangles+=model->batch[i].triangles;mesh->load_vertices+=(model->batch[i].count+1)&~1;}
     for(int s=0;s<BUFFER_COUNT;s++)for(int p=0;p<2;p++){
         mesh->vertices[s][p]=memalign(16,(model->corners/2)*sizeof(VertexPair));assert(mesh->vertices[s][p]);
+        model_vertices_init(model,mesh->vertices[s][p]);
     }
 }
 void render_init(void){
     assertf(face_count<=MAX_FACES && (world_leaf_count+7)/8<=MAX_PVS_BYTES,"Map exceeds runtime capacity");
+    candidates[0].leaf=candidates[1].leaf=-1;
+    memset(face_command_index,255,sizeof(face_command_index));
     display_init(RESOLUTION_320x240,DEPTH_16_BPP,3,GAMMA_NONE,FILTERS_RESAMPLE);
     rdpq_init();t3d_init((T3DInitParams){});
 #ifdef VALIDATE
@@ -71,36 +95,33 @@ void render_init(void){
     data_cache_hit_writeback((void*)textures,texture_count*2048);
     world_tex=malloc(texture_count*sizeof(surface_t));assert(world_tex);
     for(int i=0;i<texture_count;i++)world_tex[i]=surface_make_linear((void*)textures[i],FMT_RGBA16,32,32);
-    mesh_init(&actors,&terror_model);mesh_init(&held,&glock_world_model);mesh_init(&viewgun,&glock_view_model);
+    mesh_init(&actors[0],&terror_model);mesh_init(&actors[1],&terror_lod1_model);mesh_init(&actors[2],&terror_lod2_model);mesh_init(&held,&glock_world_model);mesh_init(&viewgun,&glock_view_model);
 }
 static void skin(Mesh *mesh,int slot,int id,BoneMatrix *bones){
     PERF_START(skin_time);
     model_skin(mesh->model,bones,mesh->vertices[slot][id]);
     PERF_END(PF_SKIN,skin_time);
-    PERF_DETAIL(mesh==&actors?PD_ACTOR_SKIN:mesh==&held?PD_HELD_SKIN:PD_VIEW_SKIN,skin_time);
+    PERF_DETAIL(mesh==&held?PD_HELD_SKIN:mesh==&viewgun?PD_VIEW_SKIN:PD_ACTOR_SKIN,skin_time);
     PERF_COUNTER(PC_SKIN_VERTICES,mesh->model->vertices);PERF_COUNTER(PC_PACK_VERTICES,mesh->model->corners);
     PERF_START(flush_time);
     data_cache_hit_writeback(mesh->vertices[slot][id],mesh->model->corners/2*sizeof(VertexPair));
     PERF_END(PF_WRITEBACK,flush_time);
 }
-static void prepare(Game *game,int slot,PerfOptions options){
-    Frame *frame=&frames[slot];BonePose pose[MODEL_MAX_BONES];BoneMatrix bones[MODEL_MAX_BONES],gun[MODEL_MAX_BONES];
-    for(int i=0;i<2;i++){
-        Fighter *f=&game->fighters[i];
-        if(options.actors && (options.views==2 || i==1)){
-            PERF_START(pose_time);game_pose(f,pose);PERF_END(PF_PLAYER_POSE,pose_time);
-            PERF_START(bone_time);model_matrices(&terror_model,pose,bones,NULL);PERF_END(PF_MATRICES,bone_time);skin(&actors,slot,i,bones);
-            PERF_START(held_time);model_pose(&glock_world_model,0,0,.5f,.5f,pose);PERF_END(PF_HELD_POSE,held_time);
-            PERF_START(gun_time);model_matrices(&glock_world_model,pose,gun,bones);PERF_END(PF_MATRICES,gun_time);skin(&held,slot,i,gun);
-            PERF_START(transform_time);Vec3 p=f->player.pos;
-            t3d_mat4fp_from_srt_euler(frame->actor_matrix[i],(float[]){1.0f/32,1.0f/32,1.0f/32},(float[]){0,f->body_yaw,0},(float[]){p.x,p.z,-p.y});
-            PERF_END(PF_TRANSFORM,transform_time);
-        }
-        if(options.weapons && i<options.views){
-            PERF_START(view_time);model_pose(&glock_view_model,f->view,f->view_age,.5f,.5f,pose);PERF_END(PF_VIEW_POSE,view_time);
-            PERF_START(bone_time);model_matrices(&glock_view_model,pose,gun,NULL);PERF_END(PF_MATRICES,bone_time);skin(&viewgun,slot,i,gun);
-        }
-    }
+static void prepare_actor(Game *game,int slot,int i,int lod){
+    Frame *frame=&frames[slot];BonePose pose[MODEL_MAX_BONES];BoneMatrix bones[MODEL_MAX_BONES],gun[MODEL_MAX_BONES];Fighter *f=&game->fighters[i];
+    PERF_START(pose_time);game_pose(f,pose);PERF_END(PF_PLAYER_POSE,pose_time);
+    PERF_START(bone_time);model_matrices(&terror_model,pose,bones,NULL);PERF_END(PF_MATRICES,bone_time);skin(&actors[lod],slot,i,bones);
+    PERF_START(held_time);model_pose(&glock_world_model,0,0,.5f,.5f,pose);PERF_END(PF_HELD_POSE,held_time);
+    PERF_START(gun_time);model_matrices(&glock_world_model,pose,gun,bones);PERF_END(PF_MATRICES,gun_time);skin(&held,slot,i,gun);
+    PERF_START(transform_time);Vec3 p=f->player.pos;
+    t3d_mat4fp_from_srt_euler(frame->actor_matrix[i],(float[]){1.0f/32,1.0f/32,1.0f/32},(float[]){0,f->body_yaw,0},(float[]){p.x,p.z,-p.y});
+    PERF_END(PF_TRANSFORM,transform_time);
+}
+static void prepare_weapon(Game *game,int slot,int i){
+    Fighter *f=&game->fighters[i];
+    PERF_START(view_time);model_baked(&glock_view_model,glock_baked,f->view,f->view_age,viewgun.vertices[slot][i]);PERF_END(PF_VIEW_POSE,view_time);
+    PERF_COUNTER(PC_PACK_VERTICES,glock_view_model.corners);
+    PERF_START(flush_time);data_cache_hit_writeback(viewgun.vertices[slot][i],glock_view_model.corners/2*sizeof(VertexPair));PERF_END(PF_WRITEBACK,flush_time);
 }
 static void draw_mesh(Mesh *mesh,int slot,int id){
     int texture=-1;
@@ -121,7 +142,13 @@ static void run_mesh(Mesh *mesh,int slot,int id){
     rspq_block_run(mesh->draw[slot][id]);
 }
 static void draw_world(const Player *player,int view_id,int fullscreen){
-    PERF_START(pvs_time);mark_visible(player_eye(player));PERF_END(PF_PVS,pvs_time);
+    PERF_START(pvs_time);int leaf=world_leaf(player_eye(player));
+    if(candidates[view_id].leaf!=leaf){
+        candidates[view_id].count=world_candidates(leaf,draw_order,order_count,candidates[view_id].faces);
+        candidates[view_id].leaf=leaf;
+    }
+    PERF_END(PF_PVS,pvs_time);
+    PERF_COUNTER(PC_CANDIDATES,candidates[view_id].count);
     PERF_START(world_time);
     Vec3 eye=player_eye(player),dir=player_direction(player);
     Vec3 right={sinf(player->yaw),-cosf(player->yaw),0};
@@ -130,8 +157,8 @@ static void draw_world(const Player *player,int view_id,int fullscreen){
 #ifdef PROFILE
     unsigned drawn=0,triangles=0,loaded=0,uploads=0;
 #endif
-    for(int at=0;at<order_count;at++){
-        int i=draw_order[at];const Face *f=&faces[i];if(!visible[i])continue;
+    for(int at=0;at<candidates[view_id].count;at++){
+        int i=candidates[view_id].faces[at];const Face *f=&faces[i];
         const Plane *pl=&planes[f->plane];float facing=dot(eye,pl->n)-pl->d;
         if((f->side?-facing:facing)<-.1f)continue;
         Vec3 diff=sub(f->center,eye);float depth=dot(diff,dir);
@@ -143,9 +170,7 @@ static void draw_world(const Player *player,int view_id,int fullscreen){
             uploads++;
 #endif
         }
-        t3d_vert_load((const T3DVertPacked*)&vertices[f->first],0,(f->count+1)&~1);
-        for(int v=1;v<f->count-1;v++)t3d_tri_draw(0,v,v+1);
-        t3d_tri_sync();
+        run_face(i);
 #ifdef PROFILE
         drawn++;triangles+=f->count-2;loaded+=(f->count+1)&~1;
 #endif
@@ -175,7 +200,13 @@ void render_frame(Game *game,float fps,int connected[2]){
     PERF_START(fence_time);
     if(frame->fence)rspq_syncpoint_wait(frame->fence);
     PERF_END(PF_FENCE,fence_time);
-    if(!options.freeze || !frozen[slot])prepare(game,slot,options);
+    active_slot=slot;
+    available_count=0;
+    for(int i=FACE_CACHE_SIZE-1;i>=0;i--){
+        face_cache[i].slots&=~(1u<<slot);
+        if(!face_cache[i].slots)available_faces[available_count++]=i;
+    }
+    int update_models=!options.freeze || !frozen[slot];
     frozen[slot]=options.freeze;
     PERF_START(display_time);surface_t *surface=display_get();PERF_END(PF_DISPLAY,display_time);
 #ifdef PROFILE
@@ -202,14 +233,25 @@ void render_frame(Game *game,float fps,int connected[2]){
         t3d_state_set_drawflags(T3D_FLAG_DEPTH|T3D_FLAG_TEXTURED|T3D_FLAG_SHADED);
         PERF_END(PF_SETUP,camera_time);
         draw_world(&f->player,i,options.fullscreen);perf_drain(i?PF_DRAIN_WORLD1:PF_DRAIN_WORLD0);
+        /* Submit terrain first so RSP work overlaps CPU model preparation. */
+        rspq_flush();
+        Fighter *other=&game->fighters[1-i];
+        int actor_visible=options.actors && sphere_visible(&f->player,other->player.pos,actor_bound_radius,options.fullscreen);
+        float nearest=dot(sub(other->player.pos,player_eye(&f->player)),dir)-actor_bound_radius;
+        int lod=nearest>900?2:nearest>400?1:0;
+        if(actor_visible && update_models)prepare_actor(game,slot,1-i,lod);
+        if(!actor_visible){other->pose_valid=0;PERF_COUNTER(PC_ACTOR_CULLED,1);}
+        else if(lod==1)PERF_COUNTER(PC_LOD1,1);
+        else if(lod==2)PERF_COUNTER(PC_LOD2,1);
         PERF_START(actor_time);
-        if(options.actors){
+        if(actor_visible){
             t3d_state_set_drawflags(T3D_FLAG_DEPTH|T3D_FLAG_TEXTURED|T3D_FLAG_SHADED|T3D_FLAG_CULL_FRONT);
-            t3d_matrix_set(frame->actor_matrix[1-i],true);run_mesh(&actors,slot,1-i);run_mesh(&held,slot,1-i);
+            t3d_matrix_set(frame->actor_matrix[1-i],true);run_mesh(&actors[lod],slot,1-i);run_mesh(&held,slot,1-i);
         }
         t3d_matrix_pop(1);
         PERF_END(PF_ACTORS,actor_time);perf_drain(PF_DRAIN_ACTORS);
         if(f->health>0 && options.weapons){
+            if(update_models)prepare_weapon(game,slot,i);
             PERF_START(weapon_setup_time);
             t3d_viewport_attach(&frame->weapon[i]);
             /* Clear this viewport's depth only: hands retain self-occlusion. */

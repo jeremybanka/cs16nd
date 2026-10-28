@@ -19,9 +19,8 @@ Implemented:
   wall occlusion, hit feedback, kills and automatic respawning after four seconds.
   **Friendly fire is enabled** so the two Terrorists can test combat together.
 
-Source weapon sounds and mixing code are included, but profiling found that
-audio DMA is not primed at startup, so playback is currently inactive. See the
-audio finding in [PERFORMANCE.md](port/n64/PERFORMANCE.md).
+Original weapon, magazine and slide sounds play through the stereo mixer.
+Audio DMA is primed at startup and active callbacks are included in profiling.
 
 The complete source clip libraries are retained: 111 Terrorist sequences, 13
 Glock viewmodel sequences and the held-weapon sequence. Runtime state selection
@@ -64,7 +63,10 @@ respawn points are skipped. There is no round or bomb objective yet.
 
 ## Build
 
-Requires Python 3 (standard library only), a built libdragon toolchain and Tiny3D.
+Requires Python 3 (standard library only), a host C compiler, a built libdragon
+toolchain and Tiny3D. The default 16 KiB command queues also require the matching
+libdragon source checkout beside the SDK as `libdragon-src`, or supplied with
+`--libdragon-source`. `--queue-kib 2` uses the installed SDK without an override.
 The private `cops-and-robbers/` submodule supplies the build assets for authorized
 collaborators:
 
@@ -131,9 +133,11 @@ respawn, then repeats. `--smoke-test` without `--validate` measures the same rou
 without the deliberately slow RDP validator. Normal cartridges have no scripted
 movement. Logs and exact accepted ROM identities are in `build/n64/`.
 
-The optimized uninstrumented two-player test runs roughly **17–19 rendered frames
-per emulated second** on the checked T-spawn route. This is the ROM's frame-loop
-counter, not ares's approximately 60 VPS output counter or a map-wide benchmark.
+The optimized profiling build measures **34.6 FPS** in the controlled two-player
+T-spawn scene, up from **19.1 FPS**. Moving combat windows measure **32.1–36.8 FPS**
+with both players animated and audio active. These use emulated CPU Count and
+VI framebuffer observations, not ares's approximately 60 VPS output counter.
+Individual moving frames still exceed 33.3 ms; this is not a map-wide 30 FPS floor.
 The scripted test and visual inspection do not establish physical-controller
 reliability, input latency or real-N64 performance.
 
@@ -142,7 +146,9 @@ reliability, input latency or real-N64 performance.
 Performance instrumentation and reproducible benchmark commands are documented
 in [port/n64/PERFORMANCE.md](port/n64/PERFORMANCE.md). The profiler measures CPU
 stages, asynchronous RDP completion, actual VI framebuffer changes, and geometry
-counts; the benchmark compares ten controlled configurations.
+counts; the benchmark compares thirteen controlled configurations, including both model
+LODs and off-screen culling. `profile_ares.py --smoke` captures moving combat;
+`--validation` checks the combat and LOD/culling graphics fixtures.
 
 This is a combat prototype, not a complete Counter-Strike match. There are no
 bots, buys, bomb rules, inventory switching, burst fire, grenades, ladders,
@@ -150,8 +156,11 @@ water movement, dynamic doors or breakable objects. Damage uses one simple
 player box, not per-bone hitboxes or armor. Movement, weapon accuracy and
 animation transitions are approximations. World textures are 32×32, character
 and weapon textures are 64×32, sky is flat color, and static lighting is sampled
-into map vertex colors. Models retain their source geometry and use ambient
-lighting. Optimizing two-player performance to a stable 30 FPS remains work.
+into map vertex colors. Nearby models retain their source geometry and use ambient lighting. Distant
+Terrorists use conservative 690/580-triangle LODs; the original 740-triangle mesh
+is retained nearby. First-person animation is baked offline with a tested maximum
+coordinate error of 1/16 game unit. Player aim/gait blending remains skeletal.
+A strict 30 FPS floor across the whole map and physical N64 testing remain work.
 
 See [feasibility and next milestones](port/n64/FEASIBILITY.md).
 

@@ -1,5 +1,114 @@
 # Performance instrumentation
 
+## Optimized result (2026-10-27)
+
+The integrated two-player build measures **34.62 FPS / 28.87 ms per frame** at
+T spawn, with both original nearby characters, both first-person weapons, full
+animation updates, HUD and active audio. The earlier equivalent full scene was
+19.12 FPS / 52.28 ms. Model CPU work fell from 26.69 to 13.78 ms; map visibility
+and submission fell from 19.02 to 8.63 ms. The submitted geometry at this location
+is unchanged: 1,376 world triangles and 3,400 model triangles per frame.
+
+The measured moving combat windows run at 32.81, 33.74, 36.80 and 32.09 FPS
+(33.77 FPS over the sampled windows). They cover the scripted movement, jump,
+crouch, firing, death, reload and respawn fixture. Their worst measured frame is
+38.38 ms and the slowest window's p95 is 35.42 ms. This is **not** a guaranteed
+30 FPS floor or a benchmark of every map route. No additional presentation
+buffering or simulation-rate reduction was used: simulation remains 60 Hz and
+presentation retains three framebuffers.
+
+| Final scenario | FPS | Mean frame ms |
+| --- | ---: | ---: |
+| Two full views | 34.62 | 28.87 |
+| Two map-only views | 59.79 | 16.72 |
+| Two full views, frozen models | 41.97 | 23.82 |
+| Full-scene repeat | 34.62 | 28.88 |
+| Medium-distance body LOD | 35.78 | 27.94 |
+| Far body LOD | 34.78 | 28.75 |
+| Both cameras facing away from the other body | 59.82 | 16.71 |
+
+The medium/far scenes use different original spawn pairs, so their FPS is not an
+isolated estimate of LOD savings. Counters verify both actors use LOD1/LOD2 in the
+respective windows and both are skipped in the away case. The final T-spawn
+sample has 562 face-command cache hits and zero misses per frame. Observed free
+heap is 869,896 bytes at T spawn and 670,952 bytes after visiting the additional
+scenes. The silent ablation observes zero audio callbacks; the full scene now
+observes 87 callbacks in its sample and about 0.04 ms overlapping audio ISR time
+per frame. That ISR time is already inside the CPU scopes.
+
+Implemented changes:
+
+- Quantize positions once per unique vertex, with bounded word conversion that
+  preserves `lroundf` ties away from zero. Initialize UV/color/normal templates
+  once and scatter aligned position pairs. Tests compare all source frames to
+  the original transform/rounding oracle and probe rounding boundaries.
+- Bake every first-person Glock clip offline. Adaptive samples retain original
+  frame boundaries and add samples where needed. The runtime interpolates
+  integer positions; its 2,299,280-byte resident bank retains all 13 clips.
+  An independent 1/16-source-frame sweep checks 6,893 poses against skeletal
+  evaluation: maximum coordinate error 2/32 game units. Player nine-way aim,
+  gait, transitions and all 111 source sequences remain skeletal.
+- Derive a conservative 150.102-unit actor/held-weapon bound from all source
+  translation extrema and bone-chain lengths. Frustum-rejected actors skip
+  posing/skinning/drawing; reappearing actors resume at the current action pose.
+  Model preparation runs after terrain submission and a nonblocking RSP flush.
+- Generate distance LODs by collapsing only same-bone edges to original source
+  endpoints. Preserve material/UV seams, open boundaries and topology. Near
+  geometry remains 740 triangles. The reviewed LODs are 690 and 580 triangles,
+  with maximum vertex displacement 1.241 and 2.997 units in any rigid-bone pose.
+  Selection requires conservative nearest depth above 400/900 units. Requested
+  480/260 budgets were deliberately not forced through the feature constraints.
+  The software visual audit covers idle/walk/crouch/death from front/side at
+  24/10 pixels; mean silhouette IoU at the tested gates is 0.997, minimum 0.952.
+- Cache exact material-sorted PVS face candidates by camera leaf. Native tests
+  compare every BSP leaf to the original visibility behavior. Cache up to 1,024
+  immutable face command blocks. A per-frame-slot borrower mask prevents freeing
+  any block before its RSP fence; exhausted caches submit directly without waits.
+  Available entries are collected once per frame, avoiding repeated full scans.
+- Use 16 KiB CPU-to-RSP queues through a private SDK object; no shared SDK is
+  modified. A matched intermediate comparison measured 29.29 FPS with 16 KiB
+  versus 26.36 with stock 2 KiB. Queue size changes allocation only, retaining
+  SDK synchronization. Inlining small vector operations and tightening vertex
+  loops removed further CPU overhead without changing arithmetic order.
+- Prime the previously inactive audio DMA and use a silence fast path. Final
+  performance and combat captures include active callbacks and weapon mixing.
+
+Reproduce the final checks:
+
+```sh
+python3 port/n64/build.py --benchmark
+python3 port/n64/profile_ares.py --output build/n64/perf-final
+python3 port/n64/build.py --profile --smoke-test
+python3 port/n64/profile_ares.py --smoke --output build/n64/perf-combat
+python3 port/n64/build.py --validate --smoke-test
+python3 port/n64/profile_ares.py --validation --output build/n64/validation-final
+python3 port/n64/test.py
+python3 port/n64/audit_lods.py
+```
+
+Captures freeze their ROM and manifest before launch and use a separate emulator
+profile that keeps running when unfocused. Generated assets, ROM snapshots,
+logs, audit images and detailed reports remain private ignored build output.
+`perf-final.{json,csv,md}`, `perf-combat.{json,csv,md}` and
+`validation-final.log` retain the evidence. Graphics validation exercises 1,200
+combat ticks plus both LODs and culling; it is separate from timing capture.
+
+The stationary final benchmark retains two ares coherency diagnostics involving
+SDK `__rspq_syncpoints_done` (CPU writes in `rspq_sp_interrupt`, RDRAM
+0x0059e070 in that captured build). They match the baseline's synchronization
+category and are not model-buffer addresses. They remain unresolved, not
+assumed harmless. The moving performance capture has zero such diagnostics.
+The separate graphics-validation run also has zero RDP or cache-coherency
+diagnostics through combat and all three LOD/culling fixtures. Ares timings do
+not certify physical N64 RDP fill/bandwidth performance.
+
+## Original instrumentation baseline
+
+The following measurements and findings describe the pre-optimization build.
+Commands above now build the optimized implementation; the original capture is
+preserved locally under `build/n64/perf-baseline/` and source commit `9c805dd`.
+
+
 The main cost added by the two-player combat slice is CPU work to update the
 models. On the controlled T-spawn capture, two map-only views run at **52.5 FPS**;
 the complete scene runs at **19.1 FPS**. Keeping the models visible but freezing
@@ -160,21 +269,13 @@ views; first-person weapon passes require about 6.25 ms. Map CPU work falls to
 15.42 ms from 19.02 ms because interleaved model work is drained explicitly.
 This is evidence of graphics queue backpressure as well as CPU model cost.
 
-## Next optimization experiments
+## Initial optimization priorities
 
-1. Quantize transformed positions once per unique vertex, then reuse them when
-   packing corners. Investigate a bounded fast float-to-int conversion while
-   preserving rounding behavior, and initialize immutable UV/color fields once.
-   Use the existing source-pose and sanitizer tests to guard fidelity.
-2. Cache visible face candidates / draw batches instead of scanning the entire
-   material-sorted face list for each view. Keep PVS and exact clipping intact.
-3. After measuring those changes, consider lower model update rates or moving
-   bone/vertex work onto the RSP. Keep idle cache hit rates and moving combat
-   captures separate; the stationary benchmark does not represent every state.
-
-No such performance optimization is included in this instrumentation change.
-Removing 14 ms alone would still leave roughly 38 ms/frame in this capture;
-30 FPS is not guaranteed by one change.
+The original capture identified redundant vertex packing and map traversal as
+first targets. Those changes, baked viewmodel animation, culling, LODs and
+command-queue tuning are now implemented as described above. CPU model
+preparation remains the largest measured category; moving animation onto the
+RSP or lowering update rates has not been adopted.
 
 ## Findings outside the main bottleneck and validation
 
@@ -183,8 +284,8 @@ that registering the callback does not prime the audio DMA queue, and the curren
 `sound_init` only registers it. Thus the earlier build queues weapon sounds in
 software but does not actually start playback. The silent ablation is not a valid
 estimate of an active mixer's cost. This playback bug is documented here and is
-left separate from the timing instrumentation so the regression baseline remains
-comparable.
+left separate from the initial timing instrumentation. It is fixed in the
+optimized result above; that result includes active audio.
 
 Ares emitted two cache-coherency diagnostics in each benchmark capture. The
 reported address resolves to libdragon's `__rspq_syncpoints_done`, with CPU PCs

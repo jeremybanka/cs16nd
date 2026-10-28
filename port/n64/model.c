@@ -93,21 +93,34 @@ void model_matrices(const Model *m,const BonePose *pose,BoneMatrix *out,const Bo
         }
     }
 }
+int16_t model_round_position(float value){
+    /* A bounded word conversion uses VR4300 trunc.w.s. Adding 0.5 before
+       converting is NOT equivalent: float addition can round just-below ties. */
+    int whole=(int)value;
+    float fraction=value-whole;
+    return whole+(fraction>=.5f)-(fraction<=-.5f);
+}
+void model_vertices_init(const Model *m,VertexPair *out){
+    memset(out,0,m->corners/2*sizeof(*out));
+    for(int i=0;i<m->corners;i++){
+        const ModelCorner *v=&m->corner[i];VertexPair *pair=&out[i/2];
+        int16_t *uv=i&1?pair->stB:pair->stA;uv[0]=v->s;uv[1]=v->t;
+        if(i&1)pair->rgbaB=0xffffffff;else pair->rgbaA=0xffffffff;
+    }
+}
 void model_skin(const Model *m,const BoneMatrix *bones,VertexPair *out){
     PERF_START(transform_time);
-    Vec3 positions[MODEL_MAX_VERTICES];assert(m->vertices<=MODEL_MAX_VERTICES);
+    ModelPosition positions[MODEL_MAX_VERTICES];assert(m->vertices<=MODEL_MAX_VERTICES);
     for(int i=0;i<m->vertices;i++){
         const ModelVertex *v=&m->vertex[i];const BoneMatrix *b=&bones[v->bone];float in[3]={v->pos.x,v->pos.y,v->pos.z},p[3];
         for(int j=0;j<3;j++){p[j]=b->m[j][3];for(int k=0;k<3;k++)p[j]+=b->m[j][k]*in[k];}
-        positions[i]=(Vec3){p[0],p[2],-p[1]};
+        positions[i].xyz[0]=model_round_position(p[0]*32);
+        positions[i].xyz[1]=model_round_position(p[2]*32);
+        positions[i].xyz[2]=model_round_position(-p[1]*32);
+        positions[i].xyz[3]=0;
     }
     PERF_DETAIL(PD_SKIN_TRANSFORM,transform_time);
     PERF_START(pack_time);
-    for(int i=0;i<m->corners;i++){
-        const ModelCorner *v=&m->corner[i];Vec3 p=positions[v->vertex];VertexPair *pair=&out[i/2];
-        int16_t *pos=i&1?pair->posB:pair->posA,*uv=i&1?pair->stB:pair->stA;
-        pos[0]=lroundf(p.x*32);pos[1]=lroundf(p.y*32);pos[2]=lroundf(p.z*32);uv[0]=v->s;uv[1]=v->t;
-        if(i&1){pair->normB=0;pair->rgbaB=0xffffffff;}else{pair->normA=0;pair->rgbaA=0xffffffff;}
-    }
+    model_scatter(m,positions,out);
     PERF_DETAIL(PD_SKIN_PACK,pack_time);
 }
